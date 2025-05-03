@@ -1,0 +1,33 @@
+{
+  "name": "ItsSmartToolBot",
+  "description": "A Smart Telegram Bot With Multi Functional Tools.",
+  "repository": "https://github.com/TheSmartDevs/SmartUtilBot",
+  "keywords": ["telegram", "bot", "python", "telethon", "pyrogram", "tools"],
+  "env": {
+    "API_ID": {
+      "description": "Get This API_ID From my.telegram.org Required For Pyro Bot Client",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Get This API_HASH From my.telegram.org Required For Pyro Bot Client",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Get This BOT_TOKEN From @BotFather Required For Pyro Bot Client",
+      "required": true
+    },
+    "MONGO_URL": {
+      "description": "MONGO_URL For Bot Users Database Broadcast",
+      "required": true
+    },
+    "OWNER_IDS": {
+      "description": "List Of Telegram User IDs Separated By Commad Get From @ItsSmartToolBot And /info",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}

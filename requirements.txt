@@ -1,0 +1,9 @@
+pyrogram
+tgcrypto
+aiohttp
+pymongo
+speedtest-cli
+asyncio
+yt-dlp
+moviepy
+pillow

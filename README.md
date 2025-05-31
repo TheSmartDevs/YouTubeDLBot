@@ -1,4 +1,5 @@
-## 🌟 YouTubeDLBot ⭐️
+
+# 🌟 YouTubeDLBot ⭐️
 
 [![GitHub Stars](https://img.shields.io/github/stars/TheSmartDevs/YouTubeDLBot?style=social)](https://github.com/TheSmartDevs/YouTubeDLBot/stargazers) 
 [![GitHub Forks](https://img.shields.io/github/forks/TheSmartDevs/YouTubeDLBot?style=social)](https://github.com/TheSmartDevs/YouTubeDLBot/network) 
@@ -83,6 +84,11 @@ pip3 install -r requirements.txt
 screen python3 main.py
 ```
 
+### ⭐️ Option 4: Deploy to Heroku 📈
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/TheSmartDevs/YouTubeDLBot)
+
+You can deploy YouTubeDLBot to Heroku with a single click using the button above. Ensure you have a Heroku account and have set up the required environment variables as described in the **Environment Variables** section before deploying. ❄️
+
 ## 🌟 Environment Variables ❄️
 
 💥 The bot requires certain environment variables to function correctly. You can configure these in one of two ways: ⭐️
@@ -147,4 +153,3 @@ Abir Arafat Chawdhruy ✨
 ## 🌟 Contributing ❄️
 
 💥 Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes. 📈 To report an issue, contact [@ISmartDevs](t.me/ISmartDevs) on Telegram. 👀
-

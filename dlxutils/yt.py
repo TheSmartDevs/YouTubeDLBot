@@ -21,29 +21,23 @@ from uuid import uuid4
 from config import COMMAND_PREFIX, YT_COOKIES_PATH, MAX_VIDEO_SIZE, VIDEO_QUALITY_OPTIONS, AUDIO_QUALITY_OPTIONS
 from utils import progress_bar
 
-# Logging Setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
 class Config:
     TEMP_DIR = Path("temp_media")
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     }
-
 Config.TEMP_DIR.mkdir(exist_ok=True)
 executor = ThreadPoolExecutor(max_workers=6)
 
-# Temporary storage for queries
 QUERY_STORAGE = {}
 
 async def create_quality_keyboard(query: str, is_audio: bool) -> InlineKeyboardMarkup:
-    # Generate a short key for the query
-    query_key = str(uuid4())[:8]  # Use first 8 characters of UUID
-    QUERY_STORAGE[query_key] = query  # Store the full query
-    
+    query_key = str(uuid4())[:8]
+    QUERY_STORAGE[query_key] = query
     quality_options = AUDIO_QUALITY_OPTIONS if is_audio else VIDEO_QUALITY_OPTIONS
     buttons = []
     row = []
@@ -54,12 +48,11 @@ async def create_quality_keyboard(query: str, is_audio: bool) -> InlineKeyboardM
                 callback_data=f"quality_{quality}_{query_key}_{'audio' if is_audio else 'video'}"
             )
         )
-        if len(row) == 2:  # Two buttons per row
+        if len(row) == 2:
             buttons.append(row)
             row = []
-    if row:  # Append any remaining buttons
+    if row:
         buttons.append(row)
-    
     return InlineKeyboardMarkup(buttons)
 
 def sanitize_filename(title: str) -> str:
@@ -89,11 +82,23 @@ async def get_video_duration(video_path: str) -> float:
         return 0.0
 
 def youtube_parser(url: str) -> Optional[str]:
-    reg_exp = r"(?:youtube\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?)|.*[?&]v=)|youtu\.be/)([^\"&?/ ]{11})"
-    match = re.search(reg_exp, url)
-    if match:
-        video_id = match.group(1)
-        return f"https://www.youtube.com/watch?v={video_id}"
+    youtube_patterns = [
+        r"(?:youtube\.com/shorts/)([^\"&?/ ]{11})(\?.*)?",
+        r"(?:youtube\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?)|.*[?&]v=)|youtu\.be/)([^\"&?/ ]{11})",
+        r"(?:youtube\.com/watch\?v=)([^\"&?/ ]{11})",
+        r"(?:m\.youtube\.com/watch\?v=)([^\"&?/ ]{11})",
+        r"(?:youtube\.com/embed/)([^\"&?/ ]{11})",
+        r"(?:youtube\.com/v/)([^\"&?/ ]{11})"
+    ]
+    
+    for pattern in youtube_patterns:
+        match = re.search(pattern, url)
+        if match:
+            video_id = match.group(1)
+            if "shorts" in url.lower():
+                return f"https://www.youtube.com/shorts/{video_id}"
+            else:
+                return f"https://www.youtube.com/watch?v={video_id}"
     return None
 
 def get_ydl_opts(output_path: str, is_audio: bool = False, quality: str = "720p") -> dict:
@@ -123,47 +128,37 @@ async def download_media(url: str, is_audio: bool, status: Message, quality: str
     if not parsed_url:
         await status.edit_text("**Invalid YouTube ID Or URL**")
         return None, "Invalid YouTube URL"
-    
     try:
         with yt_dlp.YoutubeDL({'cookiefile': YT_COOKIES_PATH, 'quiet': True}) as ydl:
             info = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(executor, ydl.extract_info, parsed_url, False),
                 timeout=30
             )
-        
         if not info:
             await status.edit_text(f"**Sorry Bro {'Audio' if is_audio else 'Video'} Not Found**")
             return None, "No media info found"
-        
         duration = info.get('duration', 0)
         if duration > 7200:
             await status.edit_text(f"**Sorry Bro {'Audio' if is_audio else 'Video'} Is Over 2hrs**")
             return None, "Media duration exceeds 2 hours"
-        
         await status.edit_text("**Found ☑️ Downloading...**")
-        
         title = info.get('title', 'Unknown')
         safe_title = sanitize_filename(title)
         output_path = f"{Config.TEMP_DIR}/{safe_title}"
-        
         opts = get_ydl_opts(output_path, is_audio, quality)
         with yt_dlp.YoutubeDL(opts) as ydl:
             await asyncio.get_event_loop().run_in_executor(executor, ydl.download, [parsed_url])
-        
         file_path = f"{output_path}.mp3" if is_audio else f"{output_path}.mp4"
         if not os.path.exists(file_path):
             await status.edit_text(f"**Sorry Bro {'Audio' if is_audio else 'Video'} Not Found**")
             return None, "Download failed"
-        
         file_size = os.path.getsize(file_path)
         if file_size > MAX_VIDEO_SIZE:
             os.remove(file_path)
             await status.edit_text(f"**Sorry Bro {'Audio' if is_audio else 'Video'} Is Over 2GB**")
             return None, "File exceeds 2GB"
-        
         thumbnail_path = await prepare_thumbnail(info.get('thumbnail'), output_path)
         duration = await get_video_duration(file_path) if not is_audio else info.get('duration', 0)
-        
         metadata = {
             'file_path': file_path,
             'title': title,
@@ -173,7 +168,6 @@ async def download_media(url: str, is_audio: bool, status: Message, quality: str
             'thumbnail_path': thumbnail_path
         }
         logger.info(f"{'Audio' if is_audio else 'Video'} Metadata: {metadata}")
-        
         return metadata, None
     except asyncio.TimeoutError:
         logger.error(f"Timeout fetching metadata for URL: {url}")
@@ -193,7 +187,6 @@ async def prepare_thumbnail(thumbnail_url: str, output_path: str) -> Optional[st
                 if resp.status != 200:
                     return None
                 data = await resp.read()
-        
         thumbnail_path = f"{output_path}_thumb.jpg"
         with Image.open(io.BytesIO(data)) as img:
             img.convert('RGB').save(thumbnail_path, "JPEG", quality=85)
@@ -209,14 +202,12 @@ async def search_youtube(query: str, retries: int = 2) -> Optional[str]:
         'quiet': True,
         'simulate': True,
     }
-    
     for attempt in range(retries):
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = await asyncio.get_event_loop().run_in_executor(executor, ydl.extract_info, query, False)
                 if info.get('entries'):
                     return info['entries'][0]['webpage_url']
-                
                 simplified_query = re.sub(r'[^\w\s]', '', query).strip()
                 if simplified_query != query:
                     info = await asyncio.get_event_loop().run_in_executor(executor, ydl.extract_info, simplified_query, False)
@@ -229,21 +220,21 @@ async def search_youtube(query: str, retries: int = 2) -> Optional[str]:
     return None
 
 async def handle_media_request(client: Client, message: Message, query: str, is_audio: bool, quality: str):
+    if not message:
+        logger.error("Message object is None in handle_media_request")
+        return
     status = await client.send_message(
         message.chat.id,
         f"**Thanks Bro! {(AUDIO_QUALITY_OPTIONS if is_audio else VIDEO_QUALITY_OPTIONS)[quality]['label']} Selected. Downloading...**",
         parse_mode=ParseMode.MARKDOWN
     )
-    
     video_url = youtube_parser(query) if youtube_parser(query) else await search_youtube(query)
     if not video_url:
         await status.edit_text(f"**Sorry Bro {'Audio' if is_audio else 'Video'} Not Found**")
         return
-    
     result, error = await download_media(video_url, is_audio, status, quality)
     if error:
         return
-    
     user_info = (
         f"[{message.from_user.first_name}](tg://user?id={message.from_user.id})" if message.from_user else
         f"[{message.chat.title}](https://t.me/{message.chat.username or 'this group'})"
@@ -257,7 +248,6 @@ async def handle_media_request(client: Client, message: Message, query: str, is_
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"**Downloaded By** {user_info}"
     )
-    
     last_update_time = [0]
     start_time = time.time()
     send_func = client.send_audio if is_audio else client.send_video
@@ -279,60 +269,102 @@ async def handle_media_request(client: Client, message: Message, query: str, is_
             'width': int(VIDEO_QUALITY_OPTIONS[quality]["height"] * 16 / 9),
             'duration': int(await get_video_duration(result['file_path']))
         })
-    
     try:
         await send_func(**kwargs)
     except Exception as e:
         logger.error(f"Upload error: {e}")
         await status.edit_text("**Sorry Bro YouTubeDL API Dead**")
         return
-    
     for path in (result['file_path'], result['thumbnail_path']):
         if path and os.path.exists(path):
             os.remove(path)
     await status.delete()
 
-async def video_command(client: Client, message: Message):
-    query = message.text.split(maxsplit=1)[1] if len(message.text.split(maxsplit=1)) > 1 else None
+async def video_command_handler(client: Client, message: Message):
+    logger.info(f"Processing video_command: chat_id={message.chat.id}, text={message.text}")
+    
+    if message.reply_to_message and message.reply_to_message.text:
+        query = message.reply_to_message.text.strip()
+    else:
+        query = message.text.split(maxsplit=1)[1] if len(message.text.split(maxsplit=1)) > 1 else None
+    
     if not query:
-        await message.reply_text("**Please provide a video name or link ❌**", parse_mode=ParseMode.MARKDOWN)
+        await client.send_message(
+            message.chat.id,
+            "**Please provide a video name or link ❌**",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
-    status = await message.reply_text("**Please select video quality:**", parse_mode=ParseMode.MARKDOWN)
-    await status.edit_text(
-        "**Please select video quality:**",
-        reply_markup=await create_quality_keyboard(query, is_audio=False),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def song_command(client: Client, message: Message):
-    query = message.text.split(maxsplit=1)[1] if len(message.text.split(maxsplit=1)) > 1 else None
-    if not query:
-        await message.reply_text("**Please provide a music name or link ❌**", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    status = await message.reply_text("**Please select audio quality:**", parse_mode=ParseMode.MARKDOWN)
-    await status.edit_text(
-        "**Please select audio quality:**",
-        reply_markup=await create_quality_keyboard(query, is_audio=True),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def quality_callback(client: Client, callback_query: CallbackQuery):
     try:
+        keyboard = await create_quality_keyboard(query, is_audio=False)
+        await client.send_message(
+            message.chat.id,
+            "**Please select video quality:**",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error creating quality keyboard: {e}")
+        await client.send_message(
+            message.chat.id,
+            "**Sorry, an error occurred. Please try again.**",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def song_command_handler(client: Client, message: Message):
+    logger.info(f"Processing song_command: chat_id={message.chat.id}, text={message.text}")
+    
+    if message.reply_to_message and message.reply_to_message.text:
+        query = message.reply_to_message.text.strip()
+    else:
+        query = message.text.split(maxsplit=1)[1] if len(message.text.split(maxsplit=1)) > 1 else None
+    
+    if not query:
+        await client.send_message(
+            message.chat.id,
+            "**Please provide a music name or link ❌**",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    try:
+        keyboard = await create_quality_keyboard(query, is_audio=True)
+        await client.send_message(
+            message.chat.id,
+            "**Please select audio quality:**",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error creating quality keyboard: {e}")
+        await client.send_message(
+            message.chat.id,
+            "**Sorry, an error occurred. Please try again.**",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def quality_callback_handler(client: Client, callback_query: CallbackQuery):
+    try:
+        logger.info(f"Processing quality_callback: data={callback_query.data}")
+        
         data = callback_query.data.split("_")
+        if len(data) < 4:
+            logger.error(f"Invalid callback data: {callback_query.data}")
+            await callback_query.message.edit_text("**Invalid callback data**", parse_mode=ParseMode.MARKDOWN)
+            await callback_query.answer("Invalid callback data")
+            return
+        
         quality, query_key, media_type = data[1], data[2], data[3]
-        query = QUERY_STORAGE.pop(query_key, None)  # Retrieve and remove query
+        query = QUERY_STORAGE.pop(query_key, None)
         if not query:
+            logger.error(f"Query not found for key: {query_key}")
             await callback_query.message.edit_text("**Sorry YouTubeDL Not Found The Media**", parse_mode=ParseMode.MARKDOWN)
-            await callback_query.answer("Query expired!")
+            await callback_query.answer("Query expired")
             return
         
         is_audio = media_type == "audio"
-        
-        # Answer the callback query first to avoid QUERY_ID_INVALID
-        await callback_query.answer(f"{(AUDIO_QUALITY_OPTIONS if is_audio else VIDEO_QUALITY_OPTIONS)[quality]['label']} selected!")
-        
+        await callback_query.answer(f"{(AUDIO_QUALITY_OPTIONS if is_audio else VIDEO_QUALITY_OPTIONS)[quality]['label']} selected")
         await callback_query.message.delete()
         await handle_media_request(
             client,
@@ -341,15 +373,32 @@ async def quality_callback(client: Client, callback_query: CallbackQuery):
             is_audio,
             quality
         )
-    except pyrogram.errors.exceptions.bad_request_400.QueryIdInvalid:
-        logger.warning("Callback query ID invalid, likely already processed or expired")
-        await callback_query.message.edit_text("**Sorry YouTubeDL API Dead**", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Callback error: {e}")
-        await callback_query.message.edit_text("**Sorry YouTubeDL API Dead**", parse_mode=ParseMode.MARKDOWN)
-        await callback_query.answer("An error occurred!")
+        if callback_query.message:
+            await callback_query.message.edit_text("**Sorry YouTubeDL API Dead**", parse_mode=ParseMode.MARKDOWN)
+        await callback_query.answer("An error occurred")
 
 def setup_dl_handler(app: Client):
-    app.add_handler(MessageHandler(video_command, filters.command(["yt", "video"], prefixes=COMMAND_PREFIX)))
-    app.add_handler(MessageHandler(song_command, filters.command(["song"], prefixes=COMMAND_PREFIX)))
-    app.add_handler(CallbackQueryHandler(quality_callback, filters.regex(r"^quality_")))
+    logger.info("Setting up download handlers")
+    
+    video_handler = MessageHandler(
+        video_command_handler,
+        filters.command(["yt", "video"], prefixes=COMMAND_PREFIX)
+    )
+    
+    song_handler = MessageHandler(
+        song_command_handler,
+        filters.command(["song"], prefixes=COMMAND_PREFIX)
+    )
+    
+    callback_handler = CallbackQueryHandler(
+        quality_callback_handler,
+        filters.regex(r"^quality_")
+    )
+    
+    app.add_handler(video_handler)
+    app.add_handler(song_handler)
+    app.add_handler(callback_handler)
+    
+    logger.info("Download handlers successfully registered")

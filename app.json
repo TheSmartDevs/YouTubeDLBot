@@ -1,0 +1,63 @@
+{
+  "name": "YouTubeDLBot",
+  "description": "A high-performance YouTube downloader Telegram bot with parallel MTProto uploads, split file support, and JS challenge resolution via Deno.",
+  "repository": "https://github.com/TheSmartDevs/YouTubeDLBot",
+  "keywords": ["telegram", "bot", "python", "telethon", "yt-dlp", "youtube", "downloader"],
+  "stack": "container",
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID. Get from my.telegram.org.",
+      "value": "Your_API_ID_Here",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash. Get from my.telegram.org.",
+      "value": "Your_API_HASH_Here",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Bot token from @BotFather on Telegram.",
+      "value": "Your_BOT_TOKEN_Here",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Telegram User ID of the bot owner. Get from @ItsSmartToolBot using /info.",
+      "value": "Your_OWNER_ID_Here",
+      "required": true
+    },
+    "DEVELOPER_USER_ID": {
+      "description": "Telegram User ID of the developer. Used for error reports.",
+      "value": "Your_DEVELOPER_USER_ID_Here",
+      "required": true
+    },
+    "LOG_CHANNEL_ID": {
+      "description": "Telegram channel ID where error reports are sent. Must be negative for supergroups.",
+      "value": "-1001234567890",
+      "required": true
+    },
+    "UPDATE_CHANNEL_URL": {
+      "description": "Telegram channel URL for bot updates. Without https://.",
+      "value": "t.me/yourchannel",
+      "required": false
+    },
+    "COMMAND_PREFIXES": {
+      "description": "Command prefixes the bot listens to, comma separated.",
+      "value": "/,!,.,,,#,$",
+      "required": false
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "standard-2x"
+    }
+  },
+  "buildpacks": [],
+  "environments": {
+    "test": {
+      "addons": [],
+      "env": {},
+      "scripts": {}
+    }
+  }
+}

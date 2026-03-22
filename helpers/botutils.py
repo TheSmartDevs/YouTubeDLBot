@@ -1,3 +1,5 @@
+import mimetypes
+import os
 from typing import Optional, Union
 
 from telethon.errors import (
@@ -7,10 +9,14 @@ from telethon.errors import (
     FloodWaitError,
     UserIsBlockedError,
 )
-from telethon.tl.types import Message
+from telethon.tl.types import (
+    Message,
+    InputMediaUploadedDocument,
+)
 
 from bot import SmartYTUtil
 from helpers.logger import LOGGER
+from helpers.fast_telethon import upload_file
 
 
 async def send_message(chat_id, text, parse_mode='markdown', buttons=None,
@@ -81,6 +87,44 @@ async def send_file(chat_id, file, caption=None, parse_mode='markdown',
                     formatting_entities=None, progress_callback=None,
                     clear_draft=False, schedule=None, comment_to=None, ttl=None):
     try:
+        if isinstance(file, str) and os.path.isfile(file):
+            with open(file, 'rb') as file_obj:
+                input_file = await upload_file(SmartYTUtil, file_obj, progress_callback=progress_callback)
+
+            mime_type, _ = mimetypes.guess_type(file)
+            mime_type = mime_type or 'application/octet-stream'
+
+            thumb_input = None
+            if thumb is not None:
+                if isinstance(thumb, bytes):
+                    thumb_input = await SmartYTUtil.upload_file(thumb, file_name='thumb.jpg')
+                elif isinstance(thumb, str) and os.path.isfile(thumb):
+                    thumb_input = await SmartYTUtil.upload_file(thumb)
+
+            media = InputMediaUploadedDocument(
+                file=input_file,
+                mime_type=mime_type,
+                attributes=attributes or [],
+                thumb=thumb_input,
+                force_file=force_document,
+            )
+
+            return await SmartYTUtil.send_file(
+                entity=chat_id,
+                file=media,
+                caption=caption,
+                parse_mode=parse_mode,
+                buttons=buttons,
+                reply_to=reply_to,
+                silent=silent,
+                background=background,
+                formatting_entities=formatting_entities,
+                clear_draft=clear_draft,
+                schedule=schedule,
+                comment_to=comment_to,
+                ttl=ttl,
+            )
+
         return await SmartYTUtil.send_file(
             entity=chat_id, file=file, caption=caption, parse_mode=parse_mode,
             buttons=buttons, thumb=thumb, attributes=attributes, reply_to=reply_to,
@@ -90,6 +134,7 @@ async def send_file(chat_id, file, caption=None, parse_mode='markdown',
             progress_callback=progress_callback, clear_draft=clear_draft,
             schedule=schedule, comment_to=comment_to, ttl=ttl,
         )
+
     except FloodWaitError as e:
         LOGGER.warning(f"FloodWait {e.seconds}s on send_file to {chat_id}")
         return None

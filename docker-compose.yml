@@ -1,0 +1,10 @@
+services:
+  YouTubeDLBot:
+    build: .
+    container_name: youtubedlbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./downloads:/app/downloads
+      - ./cookies:/app/cookies

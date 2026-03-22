@@ -47,6 +47,9 @@ def build_rmc_markup(token: str):
 
 @SmartYTUtil.on(events.NewMessage(pattern=adc_pattern))
 async def adc_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
     sender = await event.get_sender()
     if sender.id != config.OWNER_ID:
         return
@@ -121,6 +124,9 @@ async def adc_command(event):
 
 @SmartYTUtil.on(events.NewMessage(pattern=rmc_pattern))
 async def rmc_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
     sender = await event.get_sender()
     if sender.id != config.OWNER_ID:
         return

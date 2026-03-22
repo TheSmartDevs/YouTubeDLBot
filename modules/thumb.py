@@ -2,6 +2,7 @@ import asyncio
 import io
 import os
 import re
+import time
 
 import aiohttp
 from PIL import Image
@@ -20,6 +21,10 @@ prefixes = ''.join(re.escape(p) for p in config.COMMAND_PREFIXES)
 thumb_pattern = re.compile(rf'^[{prefixes}]thumb(?:\s+.+)?$', re.IGNORECASE)
 
 pending_thumb: dict = {}
+SESSION_TTL = 15 * 60
+MAX_PENDING_THUMB = 250
+THUMB_CLEANUP_INTERVAL = 60
+_thumb_cleanup_task = None
 
 THUMB_RESOLUTIONS = {
     "high": {
@@ -58,6 +63,48 @@ def build_thumb_resolution_markup(token: str):
     sb.button("🌸 Small", callback_data=f"TH|{token}|small")
     sb.button("❌ Cancel", callback_data=f"THX|{token}", position="footer")
     return sb.build_menu(b_cols=2, f_cols=1)
+
+
+def _prune_pending_thumb():
+    now = time.time()
+    expired = [
+        token for token, data in pending_thumb.items()
+        if now - float(data.get('created_at', now)) > SESSION_TTL
+    ]
+    for token in expired:
+        pending_thumb.pop(token, None)
+        clean_temp_files(TEMP_DIR / token)
+    overflow = len(pending_thumb) - MAX_PENDING_THUMB
+    if overflow > 0:
+        for token, _ in sorted(
+            pending_thumb.items(),
+            key=lambda item: float(item[1].get('created_at', 0))
+        )[:overflow]:
+            pending_thumb.pop(token, None)
+            clean_temp_files(TEMP_DIR / token)
+
+
+async def _thumb_cleanup_loop():
+    while True:
+        _prune_pending_thumb()
+        await asyncio.sleep(THUMB_CLEANUP_INTERVAL)
+
+
+def _ensure_thumb_cleanup():
+    global _thumb_cleanup_task
+    if _thumb_cleanup_task is None or _thumb_cleanup_task.done():
+        _thumb_cleanup_task = asyncio.create_task(_thumb_cleanup_loop())
+
+
+def _set_pending_thumb(token: str, data: dict):
+    data['created_at'] = time.time()
+    pending_thumb[token] = data
+    _prune_pending_thumb()
+
+
+def _get_pending_thumb(token: str):
+    _prune_pending_thumb()
+    return pending_thumb.get(token)
 
 
 def _process_thumb(raw_bytes: bytes, out_path: str, size: tuple, jpeg_quality: int):
@@ -105,6 +152,10 @@ async def fetch_thumb_by_resolution(video_id: str, out_path: str, res_key: str):
 
 @SmartYTUtil.on(events.NewMessage(pattern=thumb_pattern))
 async def thumb_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
+    _ensure_thumb_cleanup()
     text = event.message.text.strip()
     query = re.sub(rf'^[{prefixes}]thumb\s*', '', text, flags=re.IGNORECASE).strip()
 
@@ -140,13 +191,13 @@ async def thumb_command(event):
 
     token = generate_token(sender.id)
 
-    pending_thumb[token] = {
+    _set_pending_thumb(token, {
         'video_id': video_id,
         'video_url': video_url,
         'user_id': sender.id,
         'chat_id': event.chat_id,
         'msg_id': status.id,
-    }
+    })
 
     await edit_message(
         event.chat_id,
@@ -158,6 +209,7 @@ async def thumb_command(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^TH\|'))
 async def thumb_resolution_cb(event):
+    _ensure_thumb_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -170,7 +222,7 @@ async def thumb_resolution_cb(event):
         await event.answer("❌ Invalid resolution.", alert=True)
         return
 
-    data = pending_thumb.get(token)
+    data = _get_pending_thumb(token)
     if not data:
         await event.answer("❌ Session expired. Please run /thumb again.", alert=True)
         try:
@@ -196,13 +248,14 @@ async def thumb_resolution_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^THX\|'))
 async def thumb_cancel_cb(event):
+    _ensure_thumb_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 2:
         return
 
     token = parts[1]
-    data = pending_thumb.get(token)
+    data = _get_pending_thumb(token)
 
     if data and data['user_id'] != event.sender_id:
         await event.answer("❌ This is not your session.", alert=True)
@@ -219,7 +272,7 @@ async def thumb_cancel_cb(event):
 
 
 async def do_thumb_download(token: str, res_key: str):
-    data = pending_thumb.get(token)
+    data = _get_pending_thumb(token)
     if not data:
         return
 
@@ -239,6 +292,7 @@ async def do_thumb_download(token: str, res_key: str):
 
     if not thumb_path:
         await edit_message(chat_id, msg_id, "**❌ Failed to fetch thumbnail. Try again.**")
+        clean_temp_files(TEMP_DIR / token)
         pending_thumb.pop(token, None)
         return
 

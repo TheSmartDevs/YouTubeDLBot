@@ -1,13 +1,13 @@
 import asyncio
 import re
+import time
 
-from py_yt import VideosSearch
 from telethon import events
 
 import config
 from bot import SmartYTUtil
 from helpers import LOGGER, send_message, edit_message, SmartButtons
-from helpers.ythelpers import generate_token
+from helpers.ythelpers import generate_token, search_youtube_results
 
 prefixes = ''.join(re.escape(p) for p in config.COMMAND_PREFIXES)
 search_pattern = re.compile(rf'^[{prefixes}]search(?:\s+.+)?$', re.IGNORECASE)
@@ -16,18 +16,58 @@ RESULTS_PER_PAGE = 5
 MAX_RESULTS = 50
 
 pending_searches: dict = {}
+SESSION_TTL = 15 * 60
+MAX_PENDING_SEARCHES = 250
+SEARCH_CLEANUP_INTERVAL = 60
+_search_cleanup_task = None
 
 
 async def fetch_all_results(query: str) -> list:
     try:
-        src = VideosSearch(query, limit=MAX_RESULTS, language="en", region="US")
-        data = await src.next()
-        if not data or not data.get('result'):
-            return []
-        return [r for r in data['result'] if r.get('type') == 'video']
+        return await search_youtube_results(query, limit=MAX_RESULTS)
     except Exception as e:
         LOGGER.error(f"Search fetch error: {e}")
         return []
+
+
+def _prune_pending_searches():
+    now = time.time()
+    expired = [
+        token for token, data in pending_searches.items()
+        if now - float(data.get('created_at', now)) > SESSION_TTL
+    ]
+    for token in expired:
+        pending_searches.pop(token, None)
+    overflow = len(pending_searches) - MAX_PENDING_SEARCHES
+    if overflow > 0:
+        for token, _ in sorted(
+            pending_searches.items(),
+            key=lambda item: float(item[1].get('created_at', 0))
+        )[:overflow]:
+            pending_searches.pop(token, None)
+
+
+async def _search_cleanup_loop():
+    while True:
+        _prune_pending_searches()
+        await asyncio.sleep(SEARCH_CLEANUP_INTERVAL)
+
+
+def _ensure_search_cleanup():
+    global _search_cleanup_task
+    if _search_cleanup_task is None or _search_cleanup_task.done():
+        _search_cleanup_task = asyncio.create_task(_search_cleanup_loop())
+
+
+def _set_pending_search(token: str, data: dict):
+    data['created_at'] = time.time()
+    pending_searches[token] = data
+    _prune_pending_searches()
+
+
+def _get_pending_search(token: str):
+    _prune_pending_searches()
+    return pending_searches.get(token)
 
 
 def get_page(all_results: list, page: int) -> tuple:
@@ -82,6 +122,10 @@ def build_nav_markup(token: str, page: int, has_prev: bool, has_next: bool):
 
 @SmartYTUtil.on(events.NewMessage(pattern=search_pattern))
 async def search_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
+    _ensure_search_cleanup()
     text = event.message.text.strip()
     query = re.sub(rf'^[{prefixes}]search\s*', '', text, flags=re.IGNORECASE).strip()
 
@@ -107,12 +151,12 @@ async def search_command(event):
         return
 
     token = generate_token(sender.id)
-    pending_searches[token] = {
+    _set_pending_search(token, {
         'query': query,
         'results': all_results,
         'user_id': sender.id,
         'chat_id': event.chat_id,
-    }
+    })
 
     page_results, has_prev, has_next, total_pages = get_page(all_results, 1)
     result_text = build_result_text(page_results, 1, total_pages)
@@ -123,6 +167,7 @@ async def search_command(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^SR\|'))
 async def search_nav_cb(event):
+    _ensure_search_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -134,7 +179,7 @@ async def search_nav_cb(event):
     except ValueError:
         return
 
-    data = pending_searches.get(token)
+    data = _get_pending_search(token)
     if not data:
         await event.answer("❌ Session expired. Please search again.", alert=True)
         try:
@@ -168,13 +213,14 @@ async def search_nav_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^SX\|'))
 async def search_close_cb(event):
+    _ensure_search_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 2:
         return
 
     token = parts[1]
-    data = pending_searches.get(token)
+    data = _get_pending_search(token)
 
     if data and data['user_id'] != event.sender_id:
         await event.answer("❌ This is not your search session.", alert=True)

@@ -20,6 +20,9 @@ def build_help_markup():
 
 @SmartYTUtil.on(events.NewMessage(pattern=help_pattern))
 async def help_handler(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
     sender = await event.get_sender()
     first_name = sender.first_name or ''
     last_name = sender.last_name or ''

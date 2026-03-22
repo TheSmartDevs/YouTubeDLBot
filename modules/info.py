@@ -28,6 +28,62 @@ prefixes = ''.join(re.escape(p) for p in config.COMMAND_PREFIXES)
 info_pattern = re.compile(rf'^[{prefixes}]info(?:\s+.+)?$', re.IGNORECASE)
 
 pending_info: dict = {}
+SESSION_TTL = 15 * 60
+MAX_PENDING_INFO = 250
+INFO_CLEANUP_INTERVAL = 60
+_info_cleanup_task = None
+
+
+def _prune_pending_info():
+    now = time.time()
+    expired = [
+        token for token, data in pending_info.items()
+        if now - float(data.get('created_at', now)) > SESSION_TTL
+    ]
+    for token in expired:
+        data = pending_info.pop(token, None)
+        if not data:
+            continue
+        thumb_path = data.get('thumb_path')
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
+    overflow = len(pending_info) - MAX_PENDING_INFO
+    if overflow > 0:
+        for token, _ in sorted(
+            pending_info.items(),
+            key=lambda item: float(item[1].get('created_at', 0))
+        )[:overflow]:
+            data = pending_info.pop(token, None)
+            if not data:
+                continue
+            thumb_path = data.get('thumb_path')
+            if thumb_path:
+                clean_download(thumb_path)
+            clean_temp_files(TEMP_DIR / token)
+
+
+async def _info_cleanup_loop():
+    while True:
+        _prune_pending_info()
+        await asyncio.sleep(INFO_CLEANUP_INTERVAL)
+
+
+def _ensure_info_cleanup():
+    global _info_cleanup_task
+    if _info_cleanup_task is None or _info_cleanup_task.done():
+        _info_cleanup_task = asyncio.create_task(_info_cleanup_loop())
+
+
+def _set_pending_info(token: str, data: dict):
+    data['created_at'] = time.time()
+    pending_info[token] = data
+    _prune_pending_info()
+
+
+def _get_pending_info(token: str):
+    _prune_pending_info()
+    return pending_info.get(token)
 
 
 def build_info_action_markup(token: str, url: str):
@@ -62,6 +118,10 @@ def build_info_audio_quality_markup(token: str, qualities: list):
 
 @SmartYTUtil.on(events.NewMessage(pattern=info_pattern))
 async def info_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
+    _ensure_info_cleanup()
     text = event.message.text.strip()
     query = re.sub(rf'^[{prefixes}]info\s*', '', text, flags=re.IGNORECASE).strip()
 
@@ -107,7 +167,7 @@ async def info_command(event):
 
     thumb_path = await fetch_thumbnail(video_id, thumb_out)
 
-    pending_info[token] = {
+    _set_pending_info(token, {
         'url': video_url,
         'meta': meta,
         'user_id': sender.id,
@@ -115,7 +175,7 @@ async def info_command(event):
         'chat_id': event.chat_id,
         'msg_id': status.id,
         'thumb_path': thumb_path,
-    }
+    })
 
     caption = (
         f"🎬 **Title:** `{title}`\n"
@@ -141,6 +201,7 @@ async def info_command(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^IF\|'))
 async def info_filetype_cb(event):
+    _ensure_info_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -149,7 +210,7 @@ async def info_filetype_cb(event):
     token = parts[1]
     action = parts[2]
 
-    data = pending_info.get(token)
+    data = _get_pending_info(token)
     if not data:
         await event.answer("❌ Session expired. Please run /info again.", alert=True)
         try:
@@ -183,8 +244,10 @@ async def info_filetype_cb(event):
             pass
 
     elif action == "audio":
-        await event.answer()
-        audio_qualities = resolve_audio_qualities([])
+        await event.answer("📡 Fetching Available Audio Qualities...", alert=False)
+        loop = asyncio.get_event_loop()
+        fmt_data = await loop.run_in_executor(executor, _get_available_formats, data['url'])
+        audio_qualities = resolve_audio_qualities(fmt_data['audio_abrs'])
         try:
             await event.edit(
                 "**🎵 Select Audio Quality To Download:**",
@@ -196,6 +259,7 @@ async def info_filetype_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^IFV\|'))
 async def info_video_quality_cb(event):
+    _ensure_info_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -208,7 +272,7 @@ async def info_video_quality_cb(event):
         await event.answer("❌ Invalid quality.", alert=True)
         return
 
-    data = pending_info.get(token)
+    data = _get_pending_info(token)
     if not data:
         await event.answer("❌ Session expired. Please run /info again.", alert=True)
         try:
@@ -232,6 +296,7 @@ async def info_video_quality_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^IFA\|'))
 async def info_audio_quality_cb(event):
+    _ensure_info_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -244,7 +309,7 @@ async def info_audio_quality_cb(event):
         await event.answer("❌ Invalid quality.", alert=True)
         return
 
-    data = pending_info.get(token)
+    data = _get_pending_info(token)
     if not data:
         await event.answer("❌ Session expired. Please run /info again.", alert=True)
         try:
@@ -268,13 +333,14 @@ async def info_audio_quality_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^IFX\|'))
 async def info_cancel_cb(event):
+    _ensure_info_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 2:
         return
 
     token = parts[1]
-    data = pending_info.get(token)
+    data = _get_pending_info(token)
 
     if data and data['user_id'] != event.sender_id:
         await event.answer("❌ This is not your session.", alert=True)
@@ -297,7 +363,7 @@ async def info_cancel_cb(event):
 
 
 async def do_info_video_download(token: str, quality_key: str):
-    data = pending_info.get(token)
+    data = _get_pending_info(token)
     if not data:
         return
 
@@ -335,6 +401,9 @@ async def do_info_video_download(token: str, quality_key: str):
         LOGGER.error(f"Info video download failed: {e}")
         await edit_message(chat_id, msg_id, "**❌ Download Failed. Please try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_info.pop(token, None)
         return
 
@@ -343,12 +412,18 @@ async def do_info_video_download(token: str, quality_key: str):
     if not file_path:
         await edit_message(chat_id, msg_id, "**❌ File not found after download. Try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_info.pop(token, None)
         return
 
     if os.path.getsize(file_path) > MAX_FILE_SIZE:
         await edit_message(chat_id, msg_id, "**❌ File exceeds 2GB. Try a lower quality.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_info.pop(token, None)
         return
 
@@ -398,11 +473,12 @@ async def do_info_video_download(token: str, quality_key: str):
     clean_temp_files(TEMP_DIR / temp_id)
     if thumb_path:
         clean_download(thumb_path)
+    clean_temp_files(TEMP_DIR / token)
     pending_info.pop(token, None)
 
 
 async def do_info_audio_download(token: str, quality_key: str):
-    data = pending_info.get(token)
+    data = _get_pending_info(token)
     if not data:
         return
 
@@ -439,6 +515,9 @@ async def do_info_audio_download(token: str, quality_key: str):
         LOGGER.error(f"Info audio download failed: {e}")
         await edit_message(chat_id, msg_id, "**❌ Download Failed. Please try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_info.pop(token, None)
         return
 
@@ -447,12 +526,18 @@ async def do_info_audio_download(token: str, quality_key: str):
     if not file_path:
         await edit_message(chat_id, msg_id, "**❌ File not found after download. Try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_info.pop(token, None)
         return
 
     if os.path.getsize(file_path) > MAX_FILE_SIZE:
         await edit_message(chat_id, msg_id, "**❌ File exceeds 2GB.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_info.pop(token, None)
         return
 
@@ -501,4 +586,5 @@ async def do_info_audio_download(token: str, quality_key: str):
     clean_temp_files(TEMP_DIR / temp_id)
     if thumb_path:
         clean_download(thumb_path)
+    clean_temp_files(TEMP_DIR / token)
     pending_info.pop(token, None)

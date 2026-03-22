@@ -28,10 +28,66 @@ yt_video_pattern = re.compile(rf'^[{prefixes}](yt|video|mp4|dl)(?:\s+.+)?$', re.
 yt_audio_pattern = re.compile(rf'^[{prefixes}](mp3|song|aud)(?:\s+.+)?$', re.IGNORECASE)
 
 pending_downloads: dict = {}
+SESSION_TTL = 15 * 60
+MAX_PENDING_DOWNLOADS = 250
+YT_CLEANUP_INTERVAL = 60
+_yt_cleanup_task = None
+
+
+def _prune_pending_downloads():
+    now = time.time()
+    expired = [
+        token for token, data in pending_downloads.items()
+        if now - float(data.get('created_at', now)) > SESSION_TTL
+    ]
+    for token in expired:
+        data = pending_downloads.pop(token, None)
+        if not data:
+            continue
+        thumb_path = data.get('thumb_path')
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
+    overflow = len(pending_downloads) - MAX_PENDING_DOWNLOADS
+    if overflow > 0:
+        for token, _ in sorted(
+            pending_downloads.items(),
+            key=lambda item: float(item[1].get('created_at', 0))
+        )[:overflow]:
+            data = pending_downloads.pop(token, None)
+            if not data:
+                continue
+            thumb_path = data.get('thumb_path')
+            if thumb_path:
+                clean_download(thumb_path)
+            clean_temp_files(TEMP_DIR / token)
+
+
+async def _yt_cleanup_loop():
+    while True:
+        _prune_pending_downloads()
+        await asyncio.sleep(YT_CLEANUP_INTERVAL)
+
+
+def _ensure_yt_cleanup():
+    global _yt_cleanup_task
+    if _yt_cleanup_task is None or _yt_cleanup_task.done():
+        _yt_cleanup_task = asyncio.create_task(_yt_cleanup_loop())
+
+
+def _set_pending_download(token: str, data: dict):
+    data['created_at'] = time.time()
+    pending_downloads[token] = data
+    _prune_pending_downloads()
+
+
+def _get_pending_download(token: str):
+    _prune_pending_downloads()
+    return pending_downloads.get(token)
 
 
 async def do_video_download(token: str, quality_key: str):
-    data = pending_downloads.get(token)
+    data = _get_pending_download(token)
     if not data:
         return
 
@@ -69,6 +125,9 @@ async def do_video_download(token: str, quality_key: str):
         LOGGER.error(f"Video download failed: {e}")
         await edit_message(chat_id, msg_id, "**❌ Download Failed. Please try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_downloads.pop(token, None)
         return
 
@@ -77,12 +136,18 @@ async def do_video_download(token: str, quality_key: str):
     if not file_path:
         await edit_message(chat_id, msg_id, "**❌ File not found after download. Try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_downloads.pop(token, None)
         return
 
     if os.path.getsize(file_path) > MAX_FILE_SIZE:
         await edit_message(chat_id, msg_id, "**❌ File exceeds 2GB. Try a lower quality.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_downloads.pop(token, None)
         return
 
@@ -132,11 +197,12 @@ async def do_video_download(token: str, quality_key: str):
     clean_temp_files(TEMP_DIR / temp_id)
     if thumb_path:
         clean_download(thumb_path)
+    clean_temp_files(TEMP_DIR / token)
     pending_downloads.pop(token, None)
 
 
 async def do_audio_download(token: str, quality_key: str):
-    data = pending_downloads.get(token)
+    data = _get_pending_download(token)
     if not data:
         return
 
@@ -173,6 +239,9 @@ async def do_audio_download(token: str, quality_key: str):
         LOGGER.error(f"Audio download failed: {e}")
         await edit_message(chat_id, msg_id, "**❌ Download Failed. Please try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_downloads.pop(token, None)
         return
 
@@ -181,12 +250,18 @@ async def do_audio_download(token: str, quality_key: str):
     if not file_path:
         await edit_message(chat_id, msg_id, "**❌ File not found after download. Try again.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_downloads.pop(token, None)
         return
 
     if os.path.getsize(file_path) > MAX_FILE_SIZE:
         await edit_message(chat_id, msg_id, "**❌ File exceeds 2GB.**")
         clean_temp_files(TEMP_DIR / temp_id)
+        if thumb_path:
+            clean_download(thumb_path)
+        clean_temp_files(TEMP_DIR / token)
         pending_downloads.pop(token, None)
         return
 
@@ -235,10 +310,12 @@ async def do_audio_download(token: str, quality_key: str):
     clean_temp_files(TEMP_DIR / temp_id)
     if thumb_path:
         clean_download(thumb_path)
+    clean_temp_files(TEMP_DIR / token)
     pending_downloads.pop(token, None)
 
 
 async def handle_yt_command(event, query: str):
+    _ensure_yt_cleanup()
     chat_id = event.chat_id
     sender = await event.get_sender()
     user_info = build_user_info(event)
@@ -285,7 +362,7 @@ async def handle_yt_command(event, query: str):
     await edit_message(chat_id, status.id, "**🖼️ Fetching Available Thumbnail...**")
     thumb_path = await fetch_thumbnail(video_id, thumb_out)
 
-    pending_downloads[token] = {
+    _set_pending_download(token, {
         'url': video_url,
         'meta': meta,
         'user_id': sender.id,
@@ -293,7 +370,7 @@ async def handle_yt_command(event, query: str):
         'chat_id': chat_id,
         'msg_id': status.id,
         'thumb_path': thumb_path,
-    }
+    })
 
     caption = (
         f"🎬 **Title:** `{title}`\n"
@@ -318,6 +395,7 @@ async def handle_yt_command(event, query: str):
 
 
 async def handle_audio_command(event, query: str):
+    _ensure_yt_cleanup()
     chat_id = event.chat_id
     sender = await event.get_sender()
     user_info = build_user_info(event)
@@ -364,7 +442,7 @@ async def handle_audio_command(event, query: str):
     await edit_message(chat_id, status.id, "**🖼️ Fetching Available Thumbnail...**")
     thumb_path = await fetch_thumbnail(video_id, thumb_out)
 
-    pending_downloads[token] = {
+    _set_pending_download(token, {
         'url': video_url,
         'meta': meta,
         'user_id': sender.id,
@@ -372,7 +450,7 @@ async def handle_audio_command(event, query: str):
         'chat_id': chat_id,
         'msg_id': status.id,
         'thumb_path': thumb_path,
-    }
+    })
 
     caption = (
         f"🎵 **Title:** `{title}`\n"
@@ -398,6 +476,9 @@ async def handle_audio_command(event, query: str):
 
 @SmartYTUtil.on(events.NewMessage(pattern=yt_video_pattern))
 async def yt_video_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
     text = event.message.text.strip()
     query = re.sub(rf'^[{prefixes}](yt|video|mp4|dl)\s*', '', text, flags=re.IGNORECASE).strip()
 
@@ -421,6 +502,9 @@ async def yt_video_command(event):
 
 @SmartYTUtil.on(events.NewMessage(pattern=yt_audio_pattern))
 async def yt_audio_command(event):
+    if not event.is_private:
+        await send_message(event.chat_id, "**❌ This command works only in private chat.**")
+        return
     text = event.message.text.strip()
     query = re.sub(rf'^[{prefixes}](mp3|song|aud)\s*', '', text, flags=re.IGNORECASE).strip()
 
@@ -444,6 +528,7 @@ async def yt_audio_command(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^YV\|'))
 async def yt_video_cb(event):
+    _ensure_yt_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -456,7 +541,7 @@ async def yt_video_cb(event):
         await event.answer("❌ Invalid quality.", alert=True)
         return
 
-    data = pending_downloads.get(token)
+    data = _get_pending_download(token)
     if not data:
         await event.answer("❌ Session expired. Please search again.", alert=True)
         try:
@@ -480,6 +565,7 @@ async def yt_video_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^YA\|'))
 async def yt_audio_cb(event):
+    _ensure_yt_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 3:
@@ -492,7 +578,7 @@ async def yt_audio_cb(event):
         await event.answer("❌ Invalid quality.", alert=True)
         return
 
-    data = pending_downloads.get(token)
+    data = _get_pending_download(token)
     if not data:
         await event.answer("❌ Session expired. Please search again.", alert=True)
         try:
@@ -516,13 +602,14 @@ async def yt_audio_cb(event):
 
 @SmartYTUtil.on(events.CallbackQuery(pattern=rb'^YX\|'))
 async def yt_cancel_cb(event):
+    _ensure_yt_cleanup()
     raw = event.data.decode()
     parts = raw.split('|')
     if len(parts) != 2:
         return
 
     token = parts[1]
-    data = pending_downloads.get(token)
+    data = _get_pending_download(token)
 
     if data and data['user_id'] != event.sender_id:
         await event.answer("❌ This is not your session.", alert=True)

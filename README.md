@@ -41,7 +41,7 @@
 Install Python dependencies:
 
 ```bash
-pip install telethon yt-dlp aiohttp Pillow uvloop cryptg
+pip install -r requirements.txt
 ```
 
 Install Deno (required for YouTube JS challenge solving):

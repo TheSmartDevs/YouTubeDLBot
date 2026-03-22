@@ -210,6 +210,44 @@ def _ydl_search_info(query: str) -> Optional[dict]:
     return None
 
 
+def _ydl_search_results(query: str, limit: int = 10) -> list:
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'nocheckcertificate': True,
+        'socket_timeout': SOCKET_TIMEOUT,
+        'extract_flat': False,
+        'noplaylist': True,
+        'remote_components': 'ejs:github',
+    }
+    opts.update(get_cookies_opt())
+    results = []
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            entries = info.get('entries', []) if isinstance(info, dict) else []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                link = entry.get('webpage_url') or entry.get('url') or ''
+                video_id = entry.get('id') or extract_video_id(link) or ''
+                if not link and video_id:
+                    link = f"https://www.youtube.com/watch?v={video_id}"
+                channel = entry.get('uploader') or entry.get('channel') or 'Unknown'
+                results.append({
+                    'type': 'video',
+                    'title': entry.get('title', 'Unknown'),
+                    'channel': {'name': channel},
+                    'link': link,
+                    'id': video_id,
+                    'thumbnails': entry.get('thumbnails', []) or [],
+                })
+    except Exception as e:
+        LOGGER.error(f"yt-dlp multi search error: {e}")
+    return results
+
+
 async def search_youtube_metadata(query: str) -> Optional[dict]:
     try:
         loop = asyncio.get_event_loop()
@@ -217,6 +255,15 @@ async def search_youtube_metadata(query: str) -> Optional[dict]:
     except Exception as e:
         LOGGER.error(f"search_youtube_metadata error: {e}")
     return None
+
+
+async def search_youtube_results(query: str, limit: int = 50) -> list:
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(executor, _ydl_search_results, query, limit)
+    except Exception as e:
+        LOGGER.error(f"search_youtube_results error: {e}")
+    return []
 
 
 async def search_youtube_url(query: str) -> Optional[str]:
@@ -395,7 +442,25 @@ def resolve_video_qualities(available_heights: list) -> list:
 
 
 def resolve_audio_qualities(available_abrs: list) -> list:
-    return list(AUDIO_QUALITY_OPTIONS.keys())
+    keys = list(AUDIO_QUALITY_OPTIONS.keys())
+    if not available_abrs:
+        LOGGER.warning("No audio ABR data from yt-dlp, showing all audio options")
+        return keys
+    normalized_abrs = sorted({
+        int(float(abr)) for abr in available_abrs
+        if abr is not None
+    }, reverse=True)
+    if not normalized_abrs:
+        return keys
+    result = []
+    for key, opt in AUDIO_QUALITY_OPTIONS.items():
+        target = int(opt["bitrate"])
+        if any(abr >= int(target * 0.85) for abr in normalized_abrs):
+            result.append(key)
+    if result:
+        return result
+    # Fallback to the safest available option if exact targets are not present.
+    return [keys[-1]]
 
 
 def extract_meta_fields(meta: dict) -> tuple:

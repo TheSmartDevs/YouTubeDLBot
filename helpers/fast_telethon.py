@@ -176,8 +176,16 @@ class ParallelTransferrer:
 
     async def init_upload(self, file_id: int, file_size: int, part_size_kb: Optional[float] = None,
                           connection_count: Optional[int] = None) -> Tuple[int, int, bool]:
+        MAX_PART_SIZE = 512 * 1024
+        MAX_PARTS = 4000
         connection_count = connection_count or self._get_connection_count(file_size)
         part_size = (part_size_kb or utils.get_appropriated_part_size(file_size)) * 1024
+        part_count = (file_size + part_size - 1) // part_size
+        if part_count > MAX_PARTS:
+            part_size = math.ceil(file_size / MAX_PARTS)
+            part_size = math.ceil(part_size / 1024) * 1024
+        if part_size > MAX_PART_SIZE:
+            part_size = MAX_PART_SIZE
         part_count = (file_size + part_size - 1) // part_size
         is_large = file_size > 10 * 1024 * 1024
         await self._init_upload(connection_count, file_id, part_count, is_large)

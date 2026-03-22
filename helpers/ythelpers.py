@@ -3,10 +3,11 @@ import hashlib
 import io
 import os
 import re
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import aiohttp
 import yt_dlp
@@ -23,7 +24,7 @@ TEMP_DIR.mkdir(exist_ok=True)
 YT_COOKIES_PATH = str(Path(__file__).resolve().parent.parent / "cookies" / "SmartYTUtil.txt")
 
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
-MAX_DURATION = 7200
+MAX_DURATION = 10800
 SOCKET_TIMEOUT = 60
 RETRIES = 3
 EXECUTOR_WORKERS = 8
@@ -457,3 +458,36 @@ def build_audio_quality_markup(token: str, qualities: list, cb_prefix: str = "YA
         sb.button(f"{key} 📥", callback_data=f"{cb_prefix}|{token}|{key}")
     sb.button("❌ Cancel", callback_data=f"YX|{token}", position="footer")
     return sb.build_menu(b_cols=2, f_cols=1)
+
+
+def split_file_ffmpeg(file_path: str, output_dir: str, segment_duration: int, ext: str) -> List[str]:
+    os.makedirs(output_dir, exist_ok=True)
+    output_pattern = os.path.join(output_dir, f"part_%03d{ext}")
+    cmd = [
+        'ffmpeg', '-y', '-i', file_path,
+        '-f', 'segment',
+        '-segment_time', str(segment_duration),
+        '-c', 'copy',
+        '-reset_timestamps', '1',
+        '-avoid_negative_ts', 'make_zero',
+        output_pattern
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg split failed: {result.stderr.decode()}")
+    parts = sorted([
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if f.startswith('part_') and f.endswith(ext)
+    ])
+    return parts
+
+
+def compute_segment_duration(file_size: int, duration: int) -> int:
+    if duration <= 0:
+        return MAX_DURATION
+    bps = file_size / duration
+    if bps <= 0:
+        return MAX_DURATION
+    max_secs_for_2gb = int((MAX_FILE_SIZE * 0.92) / bps)
+    return max(60, min(MAX_DURATION, max_secs_for_2gb))

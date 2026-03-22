@@ -11,7 +11,6 @@ from typing import Optional
 import aiohttp
 import yt_dlp
 from PIL import Image
-from py_yt import VideosSearch, Search
 
 from config import VIDEO_QUALITY_OPTIONS, AUDIO_QUALITY_OPTIONS
 from helpers.logger import LOGGER
@@ -37,6 +36,10 @@ HEADERS = {
 }
 
 executor = ThreadPoolExecutor(max_workers=EXECUTOR_WORKERS)
+
+_DENO_BIN = os.path.expanduser("~/.deno/bin")
+if _DENO_BIN not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _DENO_BIN + os.pathsep + os.environ.get("PATH", "")
 
 LOGGER.info(f"YT Cookies path: {YT_COOKIES_PATH}")
 LOGGER.info(f"YT Cookies exists: {os.path.exists(YT_COOKIES_PATH)}")
@@ -177,34 +180,57 @@ async def fetch_thumbnail(video_id: str, out_path: str) -> Optional[str]:
     return None
 
 
+def _ydl_search_info(query: str) -> Optional[dict]:
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'nocheckcertificate': True,
+        'socket_timeout': SOCKET_TIMEOUT,
+        'extract_flat': False,
+        'noplaylist': True,
+        'remote_components': 'ejs:github',
+    }
+    opts.update(get_cookies_opt())
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if info and info.get('entries'):
+                entry = info['entries'][0]
+                return {
+                    'title': entry.get('title', 'Unknown'),
+                    'channel': entry.get('uploader') or entry.get('channel', 'Unknown'),
+                    'duration': entry.get('duration', 0),
+                    'viewCount': entry.get('view_count', 0),
+                    'link': entry.get('webpage_url') or entry.get('url', ''),
+                    'id': entry.get('id', ''),
+                }
+    except Exception as e:
+        LOGGER.error(f"yt-dlp search error: {e}")
+    return None
+
+
 async def search_youtube_metadata(query: str) -> Optional[dict]:
     try:
-        src = VideosSearch(query, limit=1, language="en", region="US")
-        data = await src.next()
-        if data and data.get('result') and len(data['result']) > 0:
-            return data['result'][0]
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(executor, _ydl_search_info, query)
     except Exception as e:
-        LOGGER.error(f"VideosSearch error: {e}")
+        LOGGER.error(f"search_youtube_metadata error: {e}")
     return None
 
 
 async def search_youtube_url(query: str) -> Optional[str]:
     for attempt in range(2):
         try:
-            src = Search(query, limit=1, language="en", region="US")
-            data = await src.next()
-            if data and data.get('result') and len(data['result']) > 0:
-                result = data['result'][0]
-                if result.get('type') == 'video':
-                    return result.get('link')
+            loop = asyncio.get_event_loop()
+            info = await loop.run_in_executor(executor, _ydl_search_info, query)
+            if info and info.get('link'):
+                return info['link']
             simplified = re.sub(r'[^\w\s]', '', query).strip()
             if simplified and simplified != query:
-                src2 = Search(simplified, limit=1, language="en", region="US")
-                data2 = await src2.next()
-                if data2 and data2.get('result') and len(data2['result']) > 0:
-                    r2 = data2['result'][0]
-                    if r2.get('type') == 'video':
-                        return r2.get('link')
+                info2 = await loop.run_in_executor(executor, _ydl_search_info, simplified)
+                if info2 and info2.get('link'):
+                    return info2['link']
         except Exception as e:
             LOGGER.error(f"Search attempt {attempt + 1} error: {e}")
             if attempt < 1:
@@ -212,11 +238,44 @@ async def search_youtube_url(query: str) -> Optional[str]:
     return None
 
 
+def _ydl_extract_url_info(video_url: str) -> Optional[dict]:
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'nocheckcertificate': True,
+        'socket_timeout': SOCKET_TIMEOUT,
+        'noplaylist': True,
+        'remote_components': 'ejs:github',
+    }
+    opts.update(get_cookies_opt())
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            if not info:
+                return None
+            return {
+                'title': info.get('title', 'Unknown'),
+                'channel': info.get('uploader') or info.get('channel', 'Unknown'),
+                'duration': info.get('duration', 0),
+                'viewCount': info.get('view_count', 0),
+                'link': info.get('webpage_url', video_url),
+                'id': info.get('id', ''),
+            }
+    except Exception as e:
+        LOGGER.error(f"yt-dlp URL extract error: {e}")
+    return None
+
+
 async def fetch_metadata_from_url(video_url: str) -> Optional[dict]:
-    video_id = extract_video_id(video_url)
-    if not video_id:
+    if not video_url:
         return None
-    return await search_youtube_metadata(video_id)
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(executor, _ydl_extract_url_info, video_url)
+    except Exception as e:
+        LOGGER.error(f"fetch_metadata_from_url error: {e}")
+    return None
 
 
 def _get_available_formats(url: str) -> dict:
@@ -226,6 +285,10 @@ def _get_available_formats(url: str) -> dict:
         'skip_download': True,
         'nocheckcertificate': True,
         'socket_timeout': SOCKET_TIMEOUT,
+        'ignoreerrors': True,
+        'ignore_no_formats_error': True,
+        'extractor_args': {'youtube': {'skip': ['hls', 'dash']}},
+        'remote_components': 'ejs:github',
     }
     opts.update(get_cookies_opt())
     try:
@@ -243,6 +306,8 @@ def _get_available_formats(url: str) -> dict:
                 if h and vcodec != 'none':
                     video_heights.add(int(h))
                 abr = f.get('abr')
+                if not abr:
+                    abr = f.get('tbr')
                 if abr and acodec != 'none' and vcodec == 'none':
                     audio_abrs.add(int(abr))
             return {
@@ -270,10 +335,17 @@ def get_video_ydl_opts(output_base: str, quality_key: str) -> dict:
         'socket_timeout': SOCKET_TIMEOUT,
         'retries': RETRIES,
         'concurrent_fragment_downloads': 5,
+        'ignoreerrors': False,
+        'ignore_no_formats_error': True,
+        'remote_components': 'ejs:github',
         'format': (
-            f'bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]'
+            f'bestvideo[height<={height}][vcodec^=avc]+bestaudio[acodec^=mp4a]'
+            f'/bestvideo[height<={height}][vcodec^=avc]+bestaudio'
             f'/bestvideo[height<={height}]+bestaudio'
-            f'/best[height<={height}]/best'
+            f'/bestvideo[height<={height}]'
+            f'/best[height<={height}]'
+            f'/bestvideo+bestaudio'
+            f'/best'
         ),
         'merge_output_format': 'mp4',
         'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}],
@@ -293,7 +365,13 @@ def get_audio_ydl_opts(output_base: str, quality_key: str) -> dict:
         'socket_timeout': SOCKET_TIMEOUT,
         'retries': RETRIES,
         'concurrent_fragment_downloads': 5,
-        'format': 'bestaudio/best',
+        'ignoreerrors': False,
+        'ignore_no_formats_error': True,
+        'remote_components': 'ejs:github',
+        'format': (
+            'bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]'
+            '/bestaudio[ext=webm]/bestaudio/best'
+        ),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -324,11 +402,15 @@ def extract_meta_fields(meta: dict) -> tuple:
     title = meta.get('title', 'Unknown')
     channel_raw = meta.get('channel', {})
     channel = channel_raw.get('name', 'Unknown') if isinstance(channel_raw, dict) else str(channel_raw)
-    duration = parse_duration_to_seconds(meta.get('duration', '0:00'))
-    view_count_raw = meta.get('viewCount', {})
-    view_count = parse_view_count(
-        view_count_raw.get('short', '0') if isinstance(view_count_raw, dict) else str(view_count_raw)
-    )
+    duration_raw = meta.get('duration', 0)
+    duration = duration_raw if isinstance(duration_raw, int) else parse_duration_to_seconds(str(duration_raw))
+    view_count_raw = meta.get('viewCount', 0)
+    if isinstance(view_count_raw, int):
+        view_count = view_count_raw
+    elif isinstance(view_count_raw, dict):
+        view_count = parse_view_count(view_count_raw.get('short', '0'))
+    else:
+        view_count = parse_view_count(str(view_count_raw))
     safe_title = sanitize_filename(title)
     return title, channel, duration, view_count, safe_title
 

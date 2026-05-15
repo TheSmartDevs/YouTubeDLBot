@@ -1,6 +1,6 @@
-API_ID = 15515318
-API_HASH = 'e04ab312a57e56e6ba42dac8dab8a5f5'
-BOT_TOKEN = '8318368345:AAG3bSQe_Swh7QYQg9jsGPqNkAXPT6PuoUM'
+API_ID = 15318
+API_HASH = 'e04ab312ae6ba42dac8dab8a5f5'
+BOT_TOKEN = '8318368345:AAG3bSQe_uoUM'
 UPDATE_CHANNEL_URL = 't.me/abirxdhackz'
 COMMAND_PREFIXES = ['/', '!', '.', ',', '$', '#']
 
